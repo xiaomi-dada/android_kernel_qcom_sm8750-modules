@@ -48,3 +48,18 @@
 #define CONFIG_SND_SOC_WCD939X_SLAVE 1
 #define CONFIG_SND_SOC_WCD9378 1
 #define CONFIG_SND_SOC_WCD9378_SLAVE 1
+
+/* Cirrus CS35L43 speaker amplifiers and friends. */
+#define CONFIG_SND_SOC_CS35L43 1
+#define CONFIG_SND_SOC_SDCA_REGISTERS 1
+#define CONFIG_SND_SOC_TYPEC_ANALOG_ACC 1
+
+/*
+ * The CS35L43 driver keys three things off the board name: an "AMC Enable"
+ * DAPM switch, its kcontrol, and the route that gates ASP TX1 -- the amplifier
+ * feedback leg -- through it.  Without this the route is hard-wired instead,
+ * and libar-pal, which looks the control up by name ("B AMC Enable Switch" and
+ * "T AMC Enable Switch", the two sound-name-prefixes in this board's device
+ * tree), cannot open or close the Cirrus TX reference.
+ */
+#define CONFIG_TARGET_PRODUCT_DADA 1

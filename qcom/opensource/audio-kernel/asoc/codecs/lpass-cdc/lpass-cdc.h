@@ -291,6 +291,9 @@ int lpass_cdc_dmic_clk_enable(struct snd_soc_component *component,
 			   u32 dmic, u32 tx_mode, bool enable);
 
 /* RX MACRO utilities */
+/* Mute the capture path while a headset is being pulled out. */
+void lpass_cdc_tx_macro_mute_hs(void);
+
 int lpass_cdc_rx_set_fir_capability(struct snd_soc_component *component,
 					bool capable);
 #else

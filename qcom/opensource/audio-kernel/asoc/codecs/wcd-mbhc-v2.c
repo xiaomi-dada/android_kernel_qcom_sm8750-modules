@@ -32,6 +32,7 @@
 #include "wcd-mbhc-legacy.h"
 #include "wcd-mbhc-adc.h"
 #include <asoc/wcd-mbhc-v2-api.h>
+#include "lpass-cdc/lpass-cdc.h"
 
 static const unsigned int mbhc_ext_dev_supported_table[] = {
 	EXTCON_JACK_MICROPHONE,
@@ -584,6 +585,14 @@ void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 	pr_debug("%s: enter insertion %d hph_status %x\n",
 		 __func__, insertion, mbhc->hph_status);
 	if (!insertion) {
+		/*
+		 * Pulling a headset out couples a burst into the capture path,
+		 * so the TX macro mutes it across the removal.  Only for a
+		 * headset: a headphone has no microphone to disturb.
+		 */
+		if (mbhc->hph_status == SND_JACK_HEADSET)
+			lpass_cdc_tx_macro_mute_hs();
+
 		/* Report removal */
 		mbhc->hph_status &= ~jack_type;
 		/*
@@ -1730,6 +1739,8 @@ static int wcd_mbhc_usbc_ana_event_handler(struct notifier_block *nb,
 
 	if (mode == TYPEC_ACCESSORY_AUDIO) {
 		dev_dbg(mbhc->component->dev, "enter, %s: mode = %lu\n", __func__, mode);
+		msm_cdc_pinctrl_select_active_state(mbhc->uart_audio_sw_np);
+		dev_dbg(mbhc->component->dev, "disable uart\n");
 #if IS_ENABLED(CONFIG_QCOM_WCD_USBSS_I2C)
 		if (mbhc->wcd_usbss_aatc_dev_np) {
 			if (cable_status == NULL)
@@ -1762,6 +1773,8 @@ static int wcd_mbhc_usbc_ana_event_handler(struct notifier_block *nb,
 		}
 #endif
 	} else if (mode < TYPEC_MAX_ACCESSORY) {
+		msm_cdc_pinctrl_select_sleep_state(mbhc->uart_audio_sw_np);
+		dev_dbg(mbhc->component->dev, "enable uart\n");
 #if IS_ENABLED(CONFIG_QCOM_WCD_USBSS_I2C)
 		if (mbhc->wcd_usbss_aatc_dev_np) {
 			WCD_MBHC_REG_READ(WCD_MBHC_L_DET_EN, l_det_en);
@@ -1794,6 +1807,33 @@ static int wcd_mbhc_usbc_ana_event_handler(struct notifier_block *nb,
 }
 #endif
 
+/*
+ * The SBU pins are shared between the UART console and the analog headset's
+ * microphone and ground.  Whatever moves them across is named here, either as
+ * a pinctrl device to select a state on or as a plain gpio to drive.
+ */
+static void wcd_mbhc_init_gpio(struct wcd_mbhc *mbhc)
+{
+	struct device *dev = mbhc->component->card->dev;
+	static const char * const prop = "qcom,uart-audio-sw-gpio";
+	struct of_phandle_args args;
+
+	dev_dbg(dev, "%s: gpio %s\n", __func__, prop);
+
+	if (!of_parse_phandle_with_args(dev->of_node, prop, NULL, 0, &args))
+		mbhc->uart_audio_sw_np = args.np;
+	else
+		mbhc->uart_audio_sw_np = NULL;
+
+	if (mbhc->uart_audio_sw_np)
+		return;
+
+	mbhc->uart_audio_sw_gpio = of_get_named_gpio(dev->of_node, prop, 0);
+	if (mbhc->uart_audio_sw_gpio < 0)
+		dev_err(dev, "%s, property %s not in node %s\n", __func__, prop,
+			dev->of_node->full_name);
+}
+
 int wcd_mbhc_start(struct wcd_mbhc *mbhc, struct wcd_mbhc_config *mbhc_cfg)
 {
 	int rc = 0;
@@ -1811,6 +1851,8 @@ int wcd_mbhc_start(struct wcd_mbhc *mbhc, struct wcd_mbhc_config *mbhc_cfg)
 	mbhc->mbhc_cfg = mbhc_cfg;
 
 	dev_dbg(mbhc->component->dev, "%s: enter\n", __func__);
+
+	wcd_mbhc_init_gpio(mbhc);
 
 	/* check if USB C analog is defined on device tree */
 	mbhc_cfg->enable_usbc_analog = 0;

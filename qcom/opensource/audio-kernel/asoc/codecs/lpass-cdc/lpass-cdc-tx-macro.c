@@ -143,6 +143,12 @@ struct lpass_cdc_tx_macro_priv {
 	u16 dmic_clk_div[MIC_PAIR_MAX];
 	u32 version;
 	unsigned long active_ch_mask[LPASS_CDC_TX_MACRO_MAX_DAIS];
+	/*
+	 * Pulling a headset out couples a burst into the capture path, so it is
+	 * muted across the removal and restored once the line has settled.
+	 */
+	u16 hs_saved_path_ctl[NUM_DECIMATORS];
+	struct delayed_work hs_unmute_dwork;
 	unsigned long active_ch_cnt[LPASS_CDC_TX_MACRO_MAX_DAIS];
 	char __iomem *tx_io_base;
 	struct platform_device *pdev_child_devices
@@ -2103,6 +2109,73 @@ static const struct lpass_cdc_tx_macro_reg_mask_val
 	{LPASS_CDC_TX0_TX_PATH_SEC7, 0x3F, 0x0A},
 };
 
+/* How long the capture path stays muted after a headset is pulled out. */
+#define LPASS_CDC_TX_HS_UNMUTE_DELAY_MS	1200
+#define LPASS_CDC_TX_PATH_PGA_MUTE_MASK	0x10
+
+/*
+ * The mute is asked for by the headset detection driver, which has no handle
+ * on this macro, so the one instance is kept here for it.
+ */
+static struct lpass_cdc_tx_macro_priv *g_tx_priv;
+
+static void tx_macro_hs_unmute_dwork(struct work_struct *work)
+{
+	struct lpass_cdc_tx_macro_priv *tx_priv = container_of(to_delayed_work(work),
+			struct lpass_cdc_tx_macro_priv, hs_unmute_dwork);
+	struct snd_soc_component *component = tx_priv->component;
+	int decimator;
+	u16 reg;
+
+	for_each_set_bit(decimator,
+			 &tx_priv->active_ch_mask[LPASS_CDC_TX_MACRO_AIF1_CAP],
+			 NUM_DECIMATORS) {
+		reg = LPASS_CDC_TX0_TX_PATH_CTL +
+			decimator * LPASS_CDC_TX_MACRO_TX_PATH_OFFSET;
+		snd_soc_component_update_bits(component, reg,
+				LPASS_CDC_TX_PATH_PGA_MUTE_MASK,
+				tx_priv->hs_saved_path_ctl[decimator]);
+		dev_info(tx_priv->dev, "%s: decimator %d, the reg value after unmute is: %#x \n",
+			 __func__, decimator,
+			 snd_soc_component_read(component, reg));
+	}
+}
+
+void lpass_cdc_tx_macro_mute_hs(void)
+{
+	struct lpass_cdc_tx_macro_priv *tx_priv = g_tx_priv;
+	struct snd_soc_component *component;
+	int decimator;
+	u16 reg;
+
+	if (!tx_priv)
+		return;
+
+	component = tx_priv->component;
+
+	for_each_set_bit(decimator,
+			 &tx_priv->active_ch_mask[LPASS_CDC_TX_MACRO_AIF1_CAP],
+			 NUM_DECIMATORS) {
+		reg = LPASS_CDC_TX0_TX_PATH_CTL +
+			decimator * LPASS_CDC_TX_MACRO_TX_PATH_OFFSET;
+		tx_priv->hs_saved_path_ctl[decimator] =
+			snd_soc_component_read(component, reg);
+		dev_info(component->dev, "%s: decimator %d, the reg value before mute is: %#x \n",
+			 __func__, decimator,
+			 tx_priv->hs_saved_path_ctl[decimator]);
+		snd_soc_component_update_bits(component, reg,
+				LPASS_CDC_TX_PATH_PGA_MUTE_MASK,
+				LPASS_CDC_TX_PATH_PGA_MUTE_MASK);
+		dev_info(component->dev, "%s: decimator %d, the reg value after mute is: %#x \n",
+			 __func__, decimator,
+			 snd_soc_component_read(component, reg));
+	}
+
+	queue_delayed_work(system_wq, &tx_priv->hs_unmute_dwork,
+			   msecs_to_jiffies(LPASS_CDC_TX_HS_UNMUTE_DELAY_MS));
+}
+EXPORT_SYMBOL_GPL(lpass_cdc_tx_macro_mute_hs);
+
 static int lpass_cdc_tx_macro_init(struct snd_soc_component *component)
 {
 	struct snd_soc_dapm_context *dapm =
@@ -2181,6 +2254,8 @@ static int lpass_cdc_tx_macro_init(struct snd_soc_component *component)
 				mute_stream_dec_unmute);
 	}
 	tx_priv->component = component;
+	INIT_DELAYED_WORK(&tx_priv->hs_unmute_dwork, tx_macro_hs_unmute_dwork);
+	g_tx_priv = tx_priv;
 
 	for (i = 0; i < ARRAY_SIZE(lpass_cdc_tx_macro_reg_init); i++)
 		snd_soc_component_update_bits(component,

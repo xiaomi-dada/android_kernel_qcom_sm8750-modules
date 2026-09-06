@@ -627,6 +627,12 @@ struct wcd_mbhc {
 	struct wcd_mbhc_fn *mbhc_fn;
 	bool force_linein;
 	struct device_node *wcd_usbss_aatc_dev_np;
+	/*
+	 * The SBU pins carry either the UART console or the analog headset's
+	 * microphone and ground, and something has to move them across.
+	 */
+	struct device_node *uart_audio_sw_np;
+	int uart_audio_sw_gpio;
 	struct device_node *fsa_aatc_dev_np;
 	struct device_node *aatc_dev_np;
 	struct notifier_block aatc_dev_nb;

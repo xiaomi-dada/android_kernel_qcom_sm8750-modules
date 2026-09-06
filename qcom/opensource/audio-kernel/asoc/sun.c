@@ -141,6 +141,13 @@ static struct wcd_mbhc_config wcd_mbhc_cfg = {
 	.moisture_duty_cycle_en = true,
 };
 
+/*
+ * Reported to userspace through the read-only "USB Headset Direction"
+ * control below; libar-pal reads it to tell whether the analog USB-C
+ * headset path has had its ground and mic swapped.
+ */
+static int usbhs_direction;
+
 static bool msm_usbc_swap_gnd_mic(struct snd_soc_component *component, bool active)
 {
 	int ret = 0;
@@ -150,6 +157,8 @@ static bool msm_usbc_swap_gnd_mic(struct snd_soc_component *component, bool acti
 
 	if (!pdata->wcd_usbss_handle && !pdata->fsa_handle)
 		return false;
+
+	usbhs_direction = 1;
 
 	if (pdata->fsa_handle) {
 		ret = fsa4480_switch_event(pdata->fsa_handle, FSA_MIC_GND_SWAP);
@@ -168,6 +177,20 @@ static bool msm_usbc_swap_gnd_mic(struct snd_soc_component *component, bool acti
 	else
 		return false;
 }
+
+static int usbhs_direction_get(struct snd_kcontrol *kcontrol,
+			       struct snd_ctl_elem_value *ucontrol)
+{
+	ucontrol->value.integer.value[0] = usbhs_direction;
+
+	return 0;
+}
+
+/* Read-only: snd_ctl_elem_write() rejects a NULL put with -EPERM. */
+static const struct snd_kcontrol_new msm_common_snd_controls[] = {
+	SOC_SINGLE_EXT("USB Headset Direction", SND_SOC_NOPM, 0, 1, 0,
+			usbhs_direction_get, NULL),
+};
 
 static void msm_parse_upd_configuration(struct platform_device *pdev,
 					struct msm_asoc_mach_data *pdata)
@@ -2158,6 +2181,15 @@ static int msm_rx_tx_codec_init(struct snd_soc_pcm_runtime *rtd)
 	}
 
 	dapm = snd_soc_component_get_dapm(lpass_cdc_component);
+
+	ret = snd_soc_add_component_controls(lpass_cdc_component,
+			msm_common_snd_controls,
+			ARRAY_SIZE(msm_common_snd_controls));
+	if (ret < 0) {
+		pr_err("%s: add_codec_controls failed, err %d\n",
+			__func__, ret);
+		return ret;
+	}
 
 	snd_soc_dapm_new_controls(dapm, msm_int_dapm_widgets,
 				ARRAY_SIZE(msm_int_dapm_widgets));
